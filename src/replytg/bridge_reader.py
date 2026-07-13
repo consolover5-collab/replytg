@@ -36,14 +36,19 @@ def fetch_new(conn: sqlite3.Connection, after_rowid: int, limit: int = 500) -> l
     ).fetchall()
 
 
-def history(conn: sqlite3.Connection, chat_id: int, limit: int = 30) -> list[sqlite3.Row]:
-    """Последние limit сообщений чата по возрастанию времени."""
-    rows = conn.execute(
-        "SELECT ts, direction, sender_name, media_type, text FROM messages "
-        "WHERE chat_id=? ORDER BY ts DESC, id DESC LIMIT ?",
-        (chat_id, limit),
-    ).fetchall()
-    return list(reversed(rows))
+def history(conn: sqlite3.Connection, chat_id: int, limit: int = 30,
+            before_ts: int | None = None) -> list[sqlite3.Row]:
+    """Последние limit сообщений чата по возрастанию времени.
+    before_ts — верхняя граница (исключая): история для промпта не должна
+    пересекаться с блоком текущей волны."""
+    sql = ("SELECT ts, direction, sender_name, media_type, text FROM messages "
+           "WHERE chat_id=:chat_id")
+    params: dict = {"chat_id": chat_id, "limit": limit}
+    if before_ts is not None:
+        sql += " AND ts < :before_ts"
+        params["before_ts"] = before_ts
+    sql += " ORDER BY ts DESC, id DESC LIMIT :limit"
+    return list(reversed(conn.execute(sql, params).fetchall()))
 
 
 def wave_incoming(conn: sqlite3.Connection, chat_id: int, since_ts: int) -> list[sqlite3.Row]:
@@ -53,6 +58,12 @@ def wave_incoming(conn: sqlite3.Connection, chat_id: int, since_ts: int) -> list
         "WHERE chat_id=? AND direction='in' AND ts >= ? ORDER BY ts, id",
         (chat_id, since_ts),
     ).fetchall()
+
+
+def max_message_id(conn: sqlite3.Connection) -> int:
+    """Хвост messages для инициализации курсора: первый запуск слушает только будущее."""
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM messages").fetchone()
+    return row["m"]
 
 
 def has_enabled_connection(conn: sqlite3.Connection) -> bool:

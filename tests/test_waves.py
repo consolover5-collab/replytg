@@ -56,7 +56,30 @@ def test_used_then_silence_then_pending_wave(tmp_path):
     assert e.current(1)["pending_incoming"] == 1
     assert e.tick(now=sent + 60 + 3600) == []           # тишина кончилась → новая волна
     st = e.current(1)
-    assert st["state"] == "collecting" and st["wave_started_ts"] == sent + 60 + 3600
+    assert st["state"] == "collecting" and st["wave_started_ts"] == sent + 100
+
+
+def test_second_pending_keeps_first_ts(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    e.note_used(1, gen_id=1, now=sent)
+    e.note_incoming(1, ts=sent + 100, now=sent + 100)
+    e.note_incoming(1, ts=sent + 200, now=sent + 200)
+    assert e.current(1)["pending_since_ts"] == sent + 100
+    e.tick(now=sent + 3600)
+    assert e.current(1)["wave_started_ts"] == sent + 100
+
+
+def test_incoming_during_generating_restarts_wave(tmp_path):
+    e = engine(tmp_path)
+    e.note_incoming(1, ts=1000, now=1000)
+    assert e.tick(now=1600) == [Generate(1, wave_started_ts=1000, gen_id=1)]
+    e.note_incoming(1, ts=1650, now=1650)               # пришло, пока LLM думал
+    assert e.current(1)["state"] == "collecting"
+    ok = e.note_card_sent(1, gen_id=1, card_message_id=9,
+                          variants=["a", "b"], allow_repeat=True, now=1660)
+    assert not ok                                       # устаревшая карточка отбита
+    assert e.tick(now=1650 + 600) == [Generate(1, wave_started_ts=1650, gen_id=2)]
 
 
 def test_silence_without_pending_goes_idle(tmp_path):

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     poll_interval_sec: float = 5.0    # период сканирования bridge.db
     draft_wait_timeout_sec: int = 30  # ожидание, пока бридж отправит драфт
     history_limit: int = 30           # сообщений контекста для LLM
+    max_variant_len: int = 1000       # лимит длины варианта (в карточке всегда целиком)
     chat_blocklist: list[int] = []
 
     @property

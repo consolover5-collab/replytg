@@ -39,6 +39,20 @@ def test_wave_incoming_filters(bridge_db):
     assert [w["text"] for w in wave] == ["раз", None]
 
 
+def test_history_before_ts_excludes_wave(bridge_db):
+    add_msg(bridge_db, 7, ts=100, text="старое")
+    add_msg(bridge_db, 7, ts=200, text="волна")
+    hist = bridge_reader.history(bridge_db, 7, limit=10, before_ts=200)
+    assert [h["text"] for h in hist] == ["старое"]
+
+
+def test_max_message_id(bridge_db):
+    assert bridge_reader.max_message_id(bridge_db) == 0
+    add_msg(bridge_db, 1, ts=10)
+    add_msg(bridge_db, 1, ts=11)
+    assert bridge_reader.max_message_id(bridge_db) == 2
+
+
 def test_has_enabled_connection(bridge_db):
     assert not bridge_reader.has_enabled_connection(bridge_db)
     bridge_db.execute(

@@ -15,13 +15,15 @@ CREATE TABLE IF NOT EXISTS chat_state (
     card_message_id INTEGER,
     repeat_at_ts INTEGER,                 -- когда повторить карточку; NULL = не повторять
     silence_until_ts INTEGER,
-    pending_incoming INTEGER NOT NULL DEFAULT 0
+    pending_incoming INTEGER NOT NULL DEFAULT 0,
+    pending_since_ts INTEGER                -- ts первого входящего, накопленного в тишине
 );
 """
 
 _STATE_FIELDS = {
     "state", "wave_started_ts", "gen_id", "variants_json",
     "card_message_id", "repeat_at_ts", "silence_until_ts", "pending_incoming",
+    "pending_since_ts",
 }
 
 

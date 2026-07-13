@@ -54,10 +54,19 @@ class WaveEngine:
             db.set_chat_state(self.conn, chat_id, state="collecting",
                               wave_started_ts=ts, repeat_at_ts=None, pending_incoming=0)
             return []
-        if state in ("collecting", "generating"):
+        if state == "collecting":
             return []  # копится в текущую волну
+        if state == "generating":
+            # LLM уже получил старый снапшот — его карточка отобьётся guard'ом
+            # note_card_sent; волна перезапускается от этого сообщения
+            db.set_chat_state(self.conn, chat_id, state="collecting", wave_started_ts=ts,
+                              repeat_at_ts=None, card_message_id=None,
+                              variants_json=None, pending_incoming=0)
+            return []
         if state == "silence":
-            db.set_chat_state(self.conn, chat_id, pending_incoming=1)
+            if not st["pending_incoming"]:
+                db.set_chat_state(self.conn, chat_id, pending_incoming=1,
+                                  pending_since_ts=ts)
             return []
         # awaiting: счётчики в ноль, старая карточка устарела
         actions: list[Action] = []
@@ -102,8 +111,11 @@ class WaveEngine:
                 actions.append(RepeatCard(chat_id, st["gen_id"]))
             elif state == "silence" and now >= (st["silence_until_ts"] or 0):
                 if st["pending_incoming"]:
+                    # волна открывается от ПЕРВОГО накопленного в тишине сообщения —
+                    # иначе wave_incoming не увидит контекст, собранный за тишину
                     db.set_chat_state(self.conn, chat_id, state="collecting",
-                                      wave_started_ts=now, pending_incoming=0,
+                                      wave_started_ts=st["pending_since_ts"],
+                                      pending_incoming=0, pending_since_ts=None,
                                       silence_until_ts=None)
                 else:
                     db.set_chat_state(self.conn, chat_id, state="idle", silence_until_ts=None)

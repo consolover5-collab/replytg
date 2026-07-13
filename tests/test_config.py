@@ -23,6 +23,7 @@ def test_defaults(tmp_path):
     assert s.wave_window_sec == 600
     assert s.used_silence_sec == 3600
     assert s.repeat_after_sec == 7200
+    assert s.max_variant_len == 1000
     assert s.chat_blocklist == []
     assert s.db_path == s.data_dir / "replytg.db"
     assert s.style_profile_path == s.data_dir / "style-profile.md"
