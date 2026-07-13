@@ -1,0 +1,30 @@
+[project]
+name = "replytg"
+version = "0.1.0"
+description = "LLM reply suggestions sidecar for telegram-business-bridge"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.24",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+replytg = "replytg.daemon:main"
+replytg-style = "replytg.style_profile:main"
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
