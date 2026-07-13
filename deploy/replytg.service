@@ -1,0 +1,13 @@
+[Unit]
+Description=replytg — LLM reply suggestions sidecar for telegram-business-bridge
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/projects/replytg
+EnvironmentFile=%h/projects/replytg/.env
+ExecStart=%h/.local/bin/uv run replytg
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
