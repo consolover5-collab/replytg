@@ -130,20 +130,34 @@ class WaveEngine:
     def note_generation_failed(self, chat_id: int) -> None:
         db.set_chat_state(self.conn, chat_id, state="idle", wave_started_ts=None)
 
-    def note_used(self, chat_id: int, now: int) -> None:
-        """✅ вариант или ✍️ свой ответ: час тишины. Вызывается в момент нажатия."""
+    def note_used(self, chat_id: int, gen_id: int, now: int) -> bool:
+        """✅ вариант или ✍️ свой ответ: час тишины. Guard: только из awaiting
+        актуальной генерации — запоздавший клик по закрытой карточке не должен
+        глотать новую волну."""
+        st = self.current(chat_id)
+        if st is None or st["state"] != "awaiting" or st["gen_id"] != gen_id:
+            return False
         db.set_chat_state(self.conn, chat_id, state="silence",
                           silence_until_ts=now + self.cfg.used_silence_sec,
                           repeat_at_ts=None, variants_json=None)
+        return True
 
-    def note_dismissed(self, chat_id: int) -> None:
+    def note_dismissed(self, chat_id: int, gen_id: int) -> bool:
+        st = self.current(chat_id)
+        if st is None or st["state"] != "awaiting" or st["gen_id"] != gen_id:
+            return False
         db.set_chat_state(self.conn, chat_id, state="idle", repeat_at_ts=None,
                           card_message_id=None, variants_json=None)
+        return True
 
-    def note_variants(self, chat_id: int, variants: list[str]) -> int:
-        """🔄: новые варианты в существующей карточке, gen_id++ (старые кнопки протухают)."""
+    def note_variants(self, chat_id: int, variants: list[str]) -> int | None:
+        """🔄: новые варианты в существующей карточке, gen_id++ (старые кнопки протухают).
+        Guard только по состоянию: gen_id сверять не нужно — вызывающий уже проверил
+        при клике, а за время await LLM важна лишь актуальность карточки."""
         st = self.current(chat_id)
-        gen_id = (st["gen_id"] if st else 0) + 1
+        if st is None or st["state"] != "awaiting":
+            return None
+        gen_id = st["gen_id"] + 1
         db.set_chat_state(self.conn, chat_id, gen_id=gen_id,
                           variants_json=json.dumps(variants, ensure_ascii=False))
         return gen_id

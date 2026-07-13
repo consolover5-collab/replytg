@@ -49,7 +49,7 @@ def test_repeat_once_then_quiet(tmp_path):
 def test_used_then_silence_then_pending_wave(tmp_path):
     e = engine(tmp_path)
     sent = to_awaiting(e)
-    e.note_used(1, now=sent + 60)
+    e.note_used(1, gen_id=1, now=sent + 60)
     st = e.current(1)
     assert st["state"] == "silence" and st["silence_until_ts"] == sent + 60 + 3600
     assert e.note_incoming(1, ts=sent + 100, now=sent + 100) == []   # копится
@@ -62,7 +62,7 @@ def test_used_then_silence_then_pending_wave(tmp_path):
 def test_silence_without_pending_goes_idle(tmp_path):
     e = engine(tmp_path)
     sent = to_awaiting(e)
-    e.note_used(1, now=sent)
+    e.note_used(1, gen_id=1, now=sent)
     e.tick(now=sent + 3600)
     assert e.current(1)["state"] == "idle"
 
@@ -87,7 +87,7 @@ def test_manual_reply_during_awaiting_closes_card(tmp_path):
 def test_dismiss_cancels_repeat(tmp_path):
     e = engine(tmp_path)
     sent = to_awaiting(e)
-    e.note_dismissed(1)
+    e.note_dismissed(1, gen_id=1)
     assert e.current(1)["state"] == "idle"
     assert e.tick(now=sent + 99999) == []
 
@@ -108,3 +108,37 @@ def test_regenerate_bumps_gen_id(tmp_path):
     new_gen = e.note_variants(1, ["н1", "н2"])
     assert new_gen == 2
     assert e.current(1)["gen_id"] == 2
+
+
+def test_stale_used_after_new_wave_rejected(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    e.note_incoming(1, ts=sent + 50, now=sent + 50)      # новая волна закрыла карточку
+    assert e.note_used(1, gen_id=1, now=sent + 60) is False   # запоздавший клик
+    assert e.current(1)["state"] == "collecting"          # волна не проглочена
+    assert e.tick(now=sent + 50 + 600) == [Generate(1, wave_started_ts=sent + 50, gen_id=2)]
+
+
+def test_stale_dismiss_after_new_wave_rejected(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    e.note_incoming(1, ts=sent + 50, now=sent + 50)
+    assert e.note_dismissed(1, gen_id=1) is False
+    assert e.current(1)["state"] == "collecting"
+
+
+def test_double_used_second_click_rejected(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    assert e.note_used(1, gen_id=1, now=sent + 60) is True
+    until = e.current(1)["silence_until_ts"]
+    assert e.note_used(1, gen_id=1, now=sent + 160) is False  # дребезг ✅
+    assert e.current(1)["silence_until_ts"] == until          # тишина не продлилась
+
+
+def test_regenerate_outside_awaiting_returns_none(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    e.note_outgoing(1, now=sent + 50)                     # карточка закрыта ответом
+    assert e.note_variants(1, ["н1", "н2"]) is None
+    assert e.current(1)["gen_id"] == 1                    # не бампнулся
