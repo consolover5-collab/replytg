@@ -23,6 +23,7 @@ build-backend = "uv_build"
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "ruff>=0.15.21",
 ]
 
 [tool.pytest.ini_options]
