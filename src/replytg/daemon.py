@@ -134,8 +134,9 @@ class Deps:
             sent = await self.bot.send_message(
                 chat_id=self.settings.owner_id, text=text,
                 reply_markup=cards.build_keyboard(a.chat_id, a.gen_id, self.settings.variant_count))
-            ok = self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
-                                            variants, allow_repeat=True, now=self.now())
+            ok = self.engine.note_card_sent(
+                a.chat_id, a.gen_id, sent.message_id, variants, now=self.now(),
+            )
             if not ok:  # волна перезапущена/закрыта, пока LLM думал
                 await self._edit_card(sent.message_id, CLOSE_NOTES["answered"])
         except Exception:  # noqa: BLE001
@@ -153,8 +154,12 @@ class Deps:
             chat_id=self.settings.owner_id,
             text="🔁 Напоминаю (без ответа 2 часа):\n\n" + cards.build_card_text(wave, variants),
             reply_markup=cards.build_keyboard(a.chat_id, a.gen_id, self.settings.variant_count))
-        self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
-                                   variants, allow_repeat=False, now=self.now())
+        self.engine.note_repeat_sent(
+            a.chat_id, a.gen_id,
+            expected_card_message_id=old_card,
+            new_card_message_id=sent.message_id,
+            now=self.now(),
+        )
         if old_card is not None:  # старая клавиатура больше не нужна
             try:
                 await self.bot.edit_message_reply_markup(
@@ -285,7 +290,7 @@ async def amain() -> None:
 
     engine = WaveEngine(db.connect(settings.db_path),
                         WaveConfig(settings.wave_window_sec, settings.used_silence_sec,
-                                   settings.repeat_after_sec))
+                                   settings.repeat_after_sec, settings.repeat_max_count))
     ensure_cursor(engine.conn, bridge_ro)
     recover_generating(engine.conn)
 

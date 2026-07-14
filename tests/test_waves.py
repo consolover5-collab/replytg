@@ -1,7 +1,13 @@
 from replytg import db
+from replytg.daemon import recover_generating
 from replytg.waves import CloseCard, Generate, RepeatCard, WaveConfig, WaveEngine
 
-CFG = WaveConfig(wave_window_sec=600, used_silence_sec=3600, repeat_after_sec=7200)
+CFG = WaveConfig(
+    wave_window_sec=600,
+    used_silence_sec=3600,
+    repeat_after_sec=7200,
+    repeat_max_count=2,
+)
 
 
 def engine(tmp_path):
@@ -14,7 +20,7 @@ def to_awaiting(e, chat_id=1, t0=1000):
     acts = e.tick(now=t0 + 600)
     assert acts == [Generate(chat_id, wave_started_ts=t0, gen_id=1)]
     ok = e.note_card_sent(chat_id, gen_id=1, card_message_id=555,
-                          variants=["в1", "в2"], allow_repeat=True, now=t0 + 610)
+                          variants=["в1", "в2"], now=t0 + 610)
     assert ok
     return t0 + 610
 
@@ -36,14 +42,60 @@ def test_owner_reply_during_collecting_drops_wave(tmp_path):
     assert e.tick(now=1600) == []                       # LLM не зовётся
 
 
-def test_repeat_once_then_quiet(tmp_path):
+def test_repeat_respects_configured_count(tmp_path):
     e = engine(tmp_path)
     sent = to_awaiting(e)
-    assert e.tick(now=sent + 7100) == []
-    assert e.tick(now=sent + 7200) == [RepeatCard(1, gen_id=1)]
-    e.note_card_sent(1, gen_id=1, card_message_id=556,
-                     variants=["в1", "в2"], allow_repeat=False, now=sent + 7201)
-    assert e.tick(now=sent + 99999) == []               # «дальше тишина»
+
+    assert e.tick(sent + 7200) == [RepeatCard(1, gen_id=1)]
+    assert e.note_repeat_sent(1, 1, expected_card_message_id=555,
+                              new_card_message_id=556, now=sent + 7201)
+    assert e.current(1)["repeat_count"] == 1
+
+    assert e.tick(sent + 7201 + 7200) == [RepeatCard(1, gen_id=1)]
+    assert e.note_repeat_sent(1, 1, expected_card_message_id=556,
+                              new_card_message_id=557, now=sent + 7202 + 7200)
+    assert e.current(1)["repeat_count"] == 2
+    assert e.current(1)["repeat_at_ts"] is None
+
+
+def test_zero_repeat_limit_does_not_schedule(tmp_path):
+    cfg = WaveConfig(600, 3600, 7200, repeat_max_count=0)
+    e = WaveEngine(db.connect(tmp_path / "r.db"), cfg)
+    e.note_incoming(1, ts=1000, now=1000)
+    e.tick(1600)
+    assert e.note_card_sent(1, 1, 555, ["а", "б"], now=1610)
+    assert e.current(1)["repeat_at_ts"] is None
+
+
+def test_stale_repeat_cannot_replace_current_card(tmp_path):
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    e.tick(sent + 7200)
+    assert not e.note_repeat_sent(1, 1, expected_card_message_id=999,
+                                  new_card_message_id=556, now=sent + 7201)
+    assert e.current(1)["card_message_id"] == 555
+
+
+def test_repeat_limit_survives_restart(tmp_path):
+    """Критерий приёмки: не больше N повторов, включая после рестарта процесса."""
+    e = engine(tmp_path)
+    sent = to_awaiting(e)
+    assert e.tick(sent + 7200) == [RepeatCard(1, gen_id=1)]
+    assert e.note_repeat_sent(1, 1, expected_card_message_id=555,
+                              new_card_message_id=556, now=sent + 7201)
+
+    # «рестарт демона»: новое соединение к тому же файлу + штатный recovery
+    e2 = WaveEngine(db.connect(tmp_path / "r.db"), CFG)
+    recover_generating(e2.conn)
+    st = e2.current(1)
+    assert st["state"] == "awaiting" and st["repeat_count"] == 1  # цикл пережил рестарт
+
+    assert e2.tick(sent + 7201 + 7200) == [RepeatCard(1, gen_id=1)]
+    assert e2.note_repeat_sent(1, 1, expected_card_message_id=556,
+                               new_card_message_id=557, now=sent + 7202 + 7200)
+    st = e2.current(1)
+    assert st["repeat_count"] == 2 and st["repeat_at_ts"] is None  # лимит исчерпан
+    assert e2.tick(sent + 99_999) == []  # больше никогда
 
 
 def test_used_then_silence_then_pending_wave(tmp_path):
@@ -77,7 +129,7 @@ def test_incoming_during_generating_restarts_wave(tmp_path):
     e.note_incoming(1, ts=1650, now=1650)               # пришло, пока LLM думал
     assert e.current(1)["state"] == "collecting"
     ok = e.note_card_sent(1, gen_id=1, card_message_id=9,
-                          variants=["a", "b"], allow_repeat=True, now=1660)
+                          variants=["a", "b"], now=1660)
     assert not ok                                       # устаревшая карточка отбита
     assert e.tick(now=1650 + 600) == [Generate(1, wave_started_ts=1650, gen_id=2)]
 
@@ -97,6 +149,7 @@ def test_new_incoming_during_awaiting_restarts_wave(tmp_path):
     assert acts == [CloseCard(1, card_message_id=555, reason="new_wave")]
     st = e.current(1)
     assert st["state"] == "collecting" and st["repeat_at_ts"] is None
+    assert st["repeat_count"] == 0
 
 
 def test_manual_reply_during_awaiting_closes_card(tmp_path):
@@ -121,7 +174,7 @@ def test_card_sent_guard_after_manual_reply(tmp_path):
     e.tick(now=1600)                                    # generating
     e.note_outgoing(1, now=1601)                        # ответил, пока LLM думал
     ok = e.note_card_sent(1, gen_id=1, card_message_id=9,
-                          variants=["a", "b"], allow_repeat=True, now=1602)
+                          variants=["a", "b"], now=1602)
     assert not ok                                       # карточка не нужна
 
 

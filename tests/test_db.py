@@ -1,3 +1,5 @@
+import sqlite3
+
 from replytg import db
 
 
@@ -27,3 +29,20 @@ def test_list_chat_states(tmp_path):
     db.set_chat_state(conn, 2, state="silence")
     states = {r["chat_id"]: r["state"] for r in db.list_chat_states(conn)}
     assert states == {1: "awaiting", 2: "silence"}
+
+
+def test_existing_database_gets_repeat_count_column(tmp_path):
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE kv (key TEXT PRIMARY KEY, value INTEGER NOT NULL)")
+    conn.execute(
+        "CREATE TABLE chat_state ("
+        "chat_id INTEGER PRIMARY KEY, state TEXT NOT NULL DEFAULT 'idle'"
+        ")"
+    )
+    conn.commit()
+    conn.close()
+
+    upgraded = db.connect(path)
+    columns = {row["name"] for row in upgraded.execute("PRAGMA table_info(chat_state)")}
+    assert "repeat_count" in columns

@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS chat_state (
     variants_json TEXT,
     card_message_id INTEGER,
     repeat_at_ts INTEGER,                 -- когда повторить карточку; NULL = не повторять
+    repeat_count INTEGER NOT NULL DEFAULT 0,
     silence_until_ts INTEGER,
     pending_incoming INTEGER NOT NULL DEFAULT 0,
     pending_since_ts INTEGER                -- ts первого входящего, накопленного в тишине
@@ -22,8 +23,8 @@ CREATE TABLE IF NOT EXISTS chat_state (
 
 _STATE_FIELDS = {
     "state", "wave_started_ts", "gen_id", "variants_json",
-    "card_message_id", "repeat_at_ts", "silence_until_ts", "pending_incoming",
-    "pending_since_ts",
+    "card_message_id", "repeat_at_ts", "repeat_count", "silence_until_ts",
+    "pending_incoming", "pending_since_ts",
 }
 
 
@@ -34,6 +35,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
     conn.executescript(SCHEMA)
+    # совместимость со старыми локальными БД, созданными до repeat_count:
+    # отдельный migration framework ради одного столбца не нужен
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_state)")}
+    if "repeat_count" not in columns:
+        conn.execute(
+            "ALTER TABLE chat_state ADD COLUMN "
+            "repeat_count INTEGER NOT NULL DEFAULT 0"
+        )
     conn.commit()
     return conn
 

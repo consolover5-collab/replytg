@@ -12,6 +12,7 @@ class WaveConfig:
     wave_window_sec: int
     used_silence_sec: int
     repeat_after_sec: int
+    repeat_max_count: int
 
 
 @dataclass(frozen=True)
@@ -52,7 +53,8 @@ class WaveEngine:
         state = st["state"] if st else "idle"
         if state in ("idle",):
             db.set_chat_state(self.conn, chat_id, state="collecting",
-                              wave_started_ts=ts, repeat_at_ts=None, pending_incoming=0)
+                              wave_started_ts=ts, repeat_at_ts=None,
+                              repeat_count=0, pending_incoming=0)
             return []
         if state == "collecting":
             return []  # копится в текущую волну
@@ -60,7 +62,7 @@ class WaveEngine:
             # LLM уже получил старый снапшот — его карточка отобьётся guard'ом
             # note_card_sent; волна перезапускается от этого сообщения
             db.set_chat_state(self.conn, chat_id, state="collecting", wave_started_ts=ts,
-                              repeat_at_ts=None, card_message_id=None,
+                              repeat_at_ts=None, repeat_count=0, card_message_id=None,
                               variants_json=None, pending_incoming=0)
             return []
         if state == "silence":
@@ -73,7 +75,7 @@ class WaveEngine:
         if st["card_message_id"] is not None:
             actions.append(CloseCard(chat_id, st["card_message_id"], reason="new_wave"))
         db.set_chat_state(self.conn, chat_id, state="collecting", wave_started_ts=ts,
-                          repeat_at_ts=None, card_message_id=None,
+                          repeat_at_ts=None, repeat_count=0, card_message_id=None,
                           variants_json=None, pending_incoming=0)
         return actions
 
@@ -85,14 +87,14 @@ class WaveEngine:
         if state in ("collecting", "generating"):
             # владелец ответил сам — волна не нужна, LLM не зовём (спека)
             db.set_chat_state(self.conn, chat_id, state="idle",
-                              wave_started_ts=None, repeat_at_ts=None)
+                              wave_started_ts=None, repeat_at_ts=None, repeat_count=0)
             return []
         if state == "awaiting":
             actions: list[Action] = []
             if st["card_message_id"] is not None:
                 actions.append(CloseCard(chat_id, st["card_message_id"], reason="answered"))
             db.set_chat_state(self.conn, chat_id, state="idle", repeat_at_ts=None,
-                              card_message_id=None, variants_json=None)
+                              repeat_count=0, card_message_id=None, variants_json=None)
             return actions
         return []  # idle | silence (в т.ч. наш собственный approve-драфт)
 
@@ -123,19 +125,50 @@ class WaveEngine:
 
     # --- обратная связь от демона/кнопок ---
 
+    def _next_repeat(self, now: int, repeat_count: int) -> int | None:
+        """Когда повторить карточку в следующий раз; None — лимит повторов исчерпан
+        (в т.ч. когда repeat_max_count=0 — повторы выключены совсем)."""
+        if repeat_count >= self.cfg.repeat_max_count:
+            return None
+        return now + self.cfg.repeat_after_sec
+
     def note_card_sent(self, chat_id: int, gen_id: int, card_message_id: int,
-                       variants: list[str], allow_repeat: bool, now: int) -> bool:
-        """Фиксирует отправленную карточку. False, если генерация устарела
-        (владелец успел ответить сам, пока LLM думал) — карточку надо закрыть."""
+                       variants: list[str], now: int) -> bool:
+        """Фиксирует отправленную карточку исходной генерации. False, если генерация
+        устарела (владелец успел ответить сам, пока LLM думал) — карточку надо закрыть."""
         st = self.current(chat_id)
-        expected = "generating" if allow_repeat else "awaiting"
-        if st is None or st["state"] != expected or st["gen_id"] != gen_id:
+        if st is None or st["state"] != "generating" or st["gen_id"] != gen_id:
             return False
         db.set_chat_state(
-            self.conn, chat_id, state="awaiting",
+            self.conn, chat_id,
+            state="awaiting",
             card_message_id=card_message_id,
             variants_json=json.dumps(variants, ensure_ascii=False),
-            repeat_at_ts=(now + self.cfg.repeat_after_sec) if allow_repeat else None,
+            repeat_count=0,
+            repeat_at_ts=self._next_repeat(now, 0),
+        )
+        return True
+
+    def note_repeat_sent(self, chat_id: int, gen_id: int,
+                         expected_card_message_id: int,
+                         new_card_message_id: int, now: int) -> bool:
+        """Фиксирует отправленную повторную карточку. CAS по card_message_id: запоздавший
+        повтор не должен подменить карточку, которая уже сменилась (новый повтор,
+        🔄 или новая волна)."""
+        st = self.current(chat_id)
+        if (
+            st is None
+            or st["state"] != "awaiting"
+            or st["gen_id"] != gen_id
+            or st["card_message_id"] != expected_card_message_id
+        ):
+            return False
+        repeat_count = st["repeat_count"] + 1
+        db.set_chat_state(
+            self.conn, chat_id,
+            card_message_id=new_card_message_id,
+            repeat_count=repeat_count,
+            repeat_at_ts=self._next_repeat(now, repeat_count),
         )
         return True
 
@@ -156,7 +189,7 @@ class WaveEngine:
             return False
         db.set_chat_state(self.conn, chat_id, state="silence",
                           silence_until_ts=now + self.cfg.used_silence_sec,
-                          repeat_at_ts=None, variants_json=None)
+                          repeat_at_ts=None, repeat_count=0, variants_json=None)
         return True
 
     def note_dismissed(self, chat_id: int, gen_id: int) -> bool:
@@ -164,7 +197,7 @@ class WaveEngine:
         if st is None or st["state"] != "awaiting" or st["gen_id"] != gen_id:
             return False
         db.set_chat_state(self.conn, chat_id, state="idle", repeat_at_ts=None,
-                          card_message_id=None, variants_json=None)
+                          repeat_count=0, card_message_id=None, variants_json=None)
         return True
 
     def note_variants(self, chat_id: int, variants: list[str],

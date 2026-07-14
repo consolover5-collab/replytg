@@ -2,15 +2,14 @@ from replytg import db
 from replytg.handlers import resolve_action
 from replytg.waves import WaveConfig, WaveEngine
 
-CFG = WaveConfig(600, 3600, 7200)
+CFG = WaveConfig(600, 3600, 7200, 1)
 
 
 def make_engine(tmp_path):
     e = WaveEngine(db.connect(tmp_path / "r.db"), CFG)
     e.note_incoming(1, ts=0, now=0)
     e.tick(now=600)
-    e.note_card_sent(1, gen_id=1, card_message_id=5, variants=["а", "б"],
-                     allow_repeat=True, now=601)
+    e.note_card_sent(1, gen_id=1, card_message_id=5, variants=["а", "б"], now=601)
     return e
 
 

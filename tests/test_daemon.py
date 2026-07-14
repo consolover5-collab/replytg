@@ -45,7 +45,7 @@ def make_deps(tmp_path):
     bridge = sqlite3.connect(tmp_path / "bridge.db")
     bridge.row_factory = sqlite3.Row
     bridge.executescript(BRIDGE_SCHEMA)
-    engine = WaveEngine(db.connect(tmp_path / "r.db"), WaveConfig(600, 3600, 7200))
+    engine = WaveEngine(db.connect(tmp_path / "r.db"), WaveConfig(600, 3600, 7200, 1))
 
     async def fake_generate(chat_id, wave_started_ts, wave_rows):
         return ["в1", "в2"]
