@@ -44,8 +44,9 @@ mechanism.
 | `REPLYTG_REPEAT_AFTER_SEC` | `7200` | Interval between reminders |
 | `REPLYTG_REPEAT_MAX_COUNT` | `1` | Max reminder resends; `0` disables |
 
-Changing `REPLYTG_REPEAT_MAX_COUNT` only takes effect for cards created afterwards — a
-reminder already scheduled for an existing card can still arrive on its old schedule.
+A reminder already scheduled for an existing card still fires on its old schedule; the
+current `REPLYTG_REPEAT_MAX_COUNT` is re-read each time the next reminder is planned,
+so raising the limit before a pending reminder fires can extend that card's cycle.
 
 Exactly two integration points with the bridge:
 
@@ -108,8 +109,11 @@ The daemon works without a profile, but suggestions will be generic.
 - `data/` (style profile, state) is chmod 0700 with built-in protection against
   ending up in git (the `.gitignore` entry covers the whole `data/` directory, not a
   `data/*` glob).
-- Message content is treated as untrusted: instructions inside conversations are
-  ignored by the LLM, and nothing can be sent without your button press — by design.
+- Message content is treated as untrusted: the LLM is explicitly instructed to ignore
+  instructions found in conversations — this reduces prompt-injection risk but no model
+  can guarantee it. Generated text is always shown to you in full, there is no
+  auto-send, and nothing goes out without your button press — that manual confirmation
+  is the real safety boundary.
 - Delivery is best-effort: if the process dies in the narrow window between your
   button press and the draft insert, the confirmed reply may not go out (the card
   stays without "✅" — that's your signal to check the chat). No persistent send
