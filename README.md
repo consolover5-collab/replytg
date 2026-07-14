@@ -2,9 +2,10 @@
 
 LLM reply suggestions sidecar for [telegram-business-bridge](https://github.com/AndyShaman/telegram-business-bridge):
 a standalone daemon that watches incoming private messages (already collected by the
-bridge), generates two reply options in your personal style, and sends a card with
-buttons to a separate Telegram bot. The approved option is delivered to your contact
-**as you**, through the bridge's standard draft mechanism.
+bridge), generates a few reply options in your personal style (`REPLYTG_VARIANT_COUNT`,
+2 by default), and sends a card with buttons to a separate Telegram bot. The approved
+option is delivered to your contact **as you**, through the bridge's standard draft
+mechanism.
 
 [Русский README](README.ru.md)
 
@@ -23,15 +24,28 @@ buttons to a separate Telegram bot. The approved option is delivered to your con
 
 - An incoming message opens a "wave": incoming messages accumulate for 10 minutes (configurable).
 - If you replied yourself during that window, the LLM is never called.
-- Otherwise — one generation: two options, one card in your control bot.
-- Used a suggestion (1️⃣/2️⃣/✍️) — one hour of silence for that chat.
-- Didn't use it and didn't reply — the same card is re-sent once after 2 hours.
+- Otherwise — one generation: one card with `REPLYTG_VARIANT_COUNT` options (2 by
+  default) in your control bot.
+- Used a suggestion (a numbered button or ✍️) — one hour of silence for that chat.
+- Didn't use it and didn't reply — the same card is re-sent after
+  `REPLYTG_REPEAT_AFTER_SEC` (2 hours by default), up to `REPLYTG_REPEAT_MAX_COUNT`
+  times (1 by default; `0` turns reminders off). Reminders reuse the last generated
+  options and don't call the LLM again.
 - A new message from the contact starts a fresh wave.
 - **There is no auto-send and never will be**: every outgoing text requires your button
   press, and options are always shown in full in the card.
 - The first run listens to future messages only — the bridge's accumulated history is
   never replayed.
 - Delivery status arrives as a reply to the card ("✅ Sent" / "⚠️ ...").
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `REPLYTG_VARIANT_COUNT` | `2` | Reply options shown in the card |
+| `REPLYTG_REPEAT_AFTER_SEC` | `7200` | Interval between reminders |
+| `REPLYTG_REPEAT_MAX_COUNT` | `1` | Max reminder resends; `0` disables |
+
+Changing `REPLYTG_REPEAT_MAX_COUNT` only takes effect for cards created afterwards — a
+reminder already scheduled for an existing card can still arrive on its old schedule.
 
 Exactly two integration points with the bridge:
 
@@ -92,7 +106,8 @@ The daemon works without a profile, but suggestions will be generic.
   pass through Telegram's servers like any bot message).
 - Invalid LLM responses are logged by error type only, never by content.
 - `data/` (style profile, state) is chmod 0700 with built-in protection against
-  ending up in git.
+  ending up in git (the `.gitignore` entry covers the whole `data/` directory, not a
+  `data/*` glob).
 - Message content is treated as untrusted: instructions inside conversations are
   ignored by the LLM, and nothing can be sent without your button press — by design.
 - Delivery is best-effort: if the process dies in the narrow window between your
@@ -103,7 +118,8 @@ The daemon works without a profile, but suggestions will be generic.
 ## Configuration
 
 Everything lives in `.env` (see `.env.example`): wave window, silence duration,
-repeat interval, variant length limit, chat blocklist, LLM model/endpoint.
+repeat interval and max repeat count, variant count and length limit, chat blocklist,
+LLM model/endpoint.
 
 ## License
 
