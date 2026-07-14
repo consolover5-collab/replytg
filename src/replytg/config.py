@@ -2,7 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -19,18 +19,28 @@ class Settings(BaseSettings):
     llm_base_url: str
     llm_api_key: str
     llm_model: str = "mimo-v2.5-pro"
-    llm_timeout_sec: float = 60.0
+    llm_timeout_sec: float = Field(default=60.0, gt=0)
 
-    wave_window_sec: int = 600        # окно накопления волны
-    used_silence_sec: int = 3600      # тишина после использования подсказки
-    repeat_after_sec: int = 7200      # повтор неиспользованной карточки (один раз)
-    poll_interval_sec: float = 5.0    # период сканирования bridge.db
-    draft_wait_timeout_sec: int = 30  # ожидание, пока бридж отправит драфт
-    history_limit: int = 30           # сообщений контекста для LLM
-    # лимит длины варианта; верхняя граница согласована с CARD_LIMIT=3500 карточки
-    # (два варианта целиком + место под блок входящих)
-    max_variant_len: int = Field(default=1000, ge=100, le=1500)
+    wave_window_sec: int = Field(default=600, gt=0)              # окно накопления волны
+    used_silence_sec: int = Field(default=3600, gt=0)            # тишина после использования подсказки
+    repeat_after_sec: int = Field(default=7200, gt=0)            # задержка перед повтором неиспользованной карточки
+    repeat_max_count: int = Field(default=1, ge=0)               # сколько раз повторять карточку (0 — выключить)
+    poll_interval_sec: float = Field(default=5.0, gt=0)          # период сканирования bridge.db
+    draft_wait_timeout_sec: int = Field(default=30, gt=0)        # ожидание, пока бридж отправит драфт
+    history_limit: int = Field(default=30, gt=0)                 # сообщений контекста для LLM
+    variant_count: int = Field(default=2, ge=1, le=5)            # число вариантов ответа в карточке
+    max_variant_len: int = Field(default=1000, ge=100, le=1500)  # лимит длины одного варианта
     chat_blocklist: list[int] = []
+
+    @model_validator(mode="after")
+    def variants_fit_card(self) -> "Settings":
+        # CARD_LIMIT карточки — 3500; 500 символов оставляем под заголовки и входящие
+        if self.variant_count * self.max_variant_len > 3000:
+            raise ValueError(
+                "варианты не помещаются в карточку: уменьши "
+                "REPLYTG_VARIANT_COUNT или REPLYTG_MAX_VARIANT_LEN"
+            )
+        return self
 
     @property
     def db_path(self) -> Path:
@@ -59,10 +69,16 @@ def assert_data_dir_safe(settings: Settings) -> None:
     for parent in [git_dir, *git_dir.parents]:
         if (parent / ".git").exists():
             gitignore = parent / ".gitignore"
-            rel = str(git_dir.relative_to(parent))
-            if not gitignore.exists() or rel.split("/")[0] not in gitignore.read_text():
+            lines = {
+                line.strip().rstrip("/")
+                for line in gitignore.read_text().splitlines()
+                if line.strip() and not line.lstrip().startswith("#")
+            } if gitignore.exists() else set()
+            rel_path = str(git_dir.relative_to(parent))
+            covered = rel_path in lines or rel_path.split("/")[0] in lines
+            if not covered:
                 raise SystemExit(
                     f"ОТКАЗ ЗАПУСКА: {git_dir} лежит в git-репозитории {parent}, "
-                    f"но не покрыт .gitignore. Добавь '{rel}/' в {gitignore}."
+                    f"но не покрыт .gitignore. Добавь '{rel_path}/' в {gitignore}."
                 )
             break

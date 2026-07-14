@@ -24,6 +24,8 @@ def test_defaults(tmp_path):
     assert s.used_silence_sec == 3600
     assert s.repeat_after_sec == 7200
     assert s.max_variant_len == 1000
+    assert s.variant_count == 2
+    assert s.repeat_max_count == 1
     assert s.chat_blocklist == []
     assert s.db_path == s.data_dir / "replytg.db"
     assert s.style_profile_path == s.data_dir / "style-profile.md"
@@ -47,3 +49,44 @@ def test_data_dir_gitignore_guard(tmp_path):
     (tmp_path / ".gitignore").write_text("data/\n")
     assert_data_dir_safe(s)  # теперь не бросает
     assert (tmp_path / "data").stat().st_mode & 0o777 == 0o700
+
+
+def test_data_dir_guard_does_not_accept_substring(tmp_path):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text("database/\n")
+    with pytest.raises(SystemExit):
+        assert_data_dir_safe(make_settings(tmp_path))
+
+
+@pytest.mark.parametrize("name,value", [
+    ("wave_window_sec", 0),
+    ("used_silence_sec", -1),
+    ("repeat_after_sec", 0),
+    ("poll_interval_sec", -1),
+    ("draft_wait_timeout_sec", 0),
+    ("history_limit", 0),
+    ("llm_timeout_sec", 0),
+])
+def test_positive_runtime_settings(tmp_path, name, value):
+    with pytest.raises(ValueError):
+        make_settings(tmp_path, **{name: value})
+
+
+@pytest.mark.parametrize("value", [-1, 6])
+def test_variant_count_range(tmp_path, value):
+    with pytest.raises(ValueError):
+        make_settings(tmp_path, variant_count=value)
+
+
+def test_zero_repeat_count_disables_repeats(tmp_path):
+    assert make_settings(tmp_path, repeat_max_count=0).repeat_max_count == 0
+
+
+def test_negative_repeat_count_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        make_settings(tmp_path, repeat_max_count=-1)
+
+
+def test_variants_must_fit_card(tmp_path):
+    with pytest.raises(ValueError, match="карточ"):
+        make_settings(tmp_path, variant_count=3, max_variant_len=1500)
