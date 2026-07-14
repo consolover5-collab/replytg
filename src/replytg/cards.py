@@ -1,7 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 CARD_LIMIT = 3500  # запас до 4096 Telegram (suffix-статусы, заголовки)
-ACTIONS = {"v1", "v2", "more", "own", "x"}
+NUMBER_LABELS = ("1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣")  # variant_count ограничен ≤5 в Settings
+NON_VARIANT_ACTIONS = {"more", "own", "x"}
 _TRUNCATE_MARKER = "… [начало обрезано]\n"
 
 
@@ -11,10 +12,13 @@ def _fmt_msg(m) -> str:
 
 
 def build_card_text(wave_msgs: list, variants: list[str]) -> str:
-    """Блок входящих + оба варианта. Варианты НИКОГДА не обрезаются (владелец
+    """Блок входящих + все варианты. Варианты НИКОГДА не обрезаются (владелец
     подтверждает глазами ровно тот текст, который уйдёт); при нехватке места
     усечётся начало блока входящих с явным маркером."""
-    variants_block = f"1️⃣ {variants[0]}\n\n2️⃣ {variants[1]}"
+    variants_block = "\n\n".join(
+        f"{NUMBER_LABELS[index]} {variant}"
+        for index, variant in enumerate(variants)
+    )
     lines = [_fmt_msg(m) for m in wave_msgs] or ["💬 (новые сообщения)"]
     wave_block = "\n".join(lines)
     budget = CARD_LIMIT - len(variants_block) - 2  # разделитель \n\n
@@ -26,14 +30,26 @@ def build_card_text(wave_msgs: list, variants: list[str]) -> str:
     return f"{wave_block}\n\n{variants_block}"
 
 
-def build_keyboard(chat_id: int, gen_id: int) -> InlineKeyboardMarkup:
+def build_keyboard(chat_id: int, gen_id: int, variant_count: int) -> InlineKeyboardMarkup:
     def btn(label: str, action: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(text=label, callback_data=f"rt:{chat_id}:{gen_id}:{action}")
 
+    variant_buttons = [
+        btn(NUMBER_LABELS[index], f"v{index + 1}")
+        for index in range(variant_count)
+    ]
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn("1️⃣", "v1"), btn("2️⃣", "v2")],
+        variant_buttons,
         [btn("🔄 Ещё", "more"), btn("✍️ Свой", "own"), btn("❌", "x")],
     ])
+
+
+def variant_index(action: str) -> int | None:
+    """'v3' → 2 (0-based индекс в списке variants). Не число/не v-действие → None."""
+    if action.startswith("v") and action[1:].isdigit():
+        index = int(action[1:]) - 1
+        return index if index >= 0 else None
+    return None
 
 
 def parse_callback(data: str) -> tuple[int, int, str] | None:
@@ -43,6 +59,6 @@ def parse_callback(data: str) -> tuple[int, int, str] | None:
     _, chat_id_s, gen_id_s, action = parts
     if not (chat_id_s.lstrip("-").isdigit() and gen_id_s.isdigit()):
         return None
-    if action not in ACTIONS:
+    if not (action in NON_VARIANT_ACTIONS or variant_index(action) is not None):
         return None
     return int(chat_id_s), int(gen_id_s), action

@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from replytg.cards import parse_callback
+from replytg.cards import parse_callback, variant_index
 from replytg.waves import WaveEngine
 
 log = logging.getLogger(__name__)
@@ -34,11 +34,12 @@ def resolve_action(engine: WaveEngine, data: str,
         return None
     if message_id is not None and st["card_message_id"] != message_id:
         return None
-    if action in ("v1", "v2"):
+    index = variant_index(action)
+    if index is not None:
         variants = engine.variants(chat_id)
-        if len(variants) != 2:
+        if index >= len(variants):
             return None
-        return action, chat_id, gen_id, variants[0 if action == "v1" else 1]
+        return action, chat_id, gen_id, variants[index]
     return action, chat_id, gen_id, None
 
 
@@ -77,7 +78,7 @@ def make_router(deps) -> Router:
             await cb.answer("Карточка устарела")
             return
         action, chat_id, gen_id, variant_text = res
-        if action in ("v1", "v2"):
+        if variant_index(action) is not None:
             # guard: тишина включается атомарно ДО отправки; False = устарело
             if not deps.engine.note_used(chat_id, gen_id, now=deps.now()):
                 await cb.answer("Карточка устарела")

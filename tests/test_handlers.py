@@ -54,3 +54,10 @@ def test_resolve_non_variant_actions(tmp_path):
     assert resolve_action(e, "rt:1:1:more") == ("more", 1, 1, None)
     assert resolve_action(e, "rt:1:1:own") == ("own", 1, 1, None)
     assert resolve_action(e, "rt:1:1:x") == ("x", 1, 1, None)
+
+
+def test_resolve_third_variant(tmp_path):
+    e = make_engine(tmp_path)
+    e.note_variants(1, ["а", "б", "в"], expected_gen_id=1)
+    assert resolve_action(e, "rt:1:2:v3", message_id=5) == ("v3", 1, 2, "в")
+    assert resolve_action(e, "rt:1:2:v4", message_id=5) is None

@@ -30,7 +30,7 @@ def test_empty_wave_still_renders():
 
 
 def test_keyboard_callback_data():
-    kb = build_keyboard(chat_id=123, gen_id=7)
+    kb = build_keyboard(chat_id=123, gen_id=7, variant_count=2)
     data = [b.callback_data for row in kb.inline_keyboard for b in row]
     assert data == ["rt:123:7:v1", "rt:123:7:v2", "rt:123:7:more",
                     "rt:123:7:own", "rt:123:7:x"]
@@ -42,3 +42,13 @@ def test_parse_callback():
     assert parse_callback("rt:abc:7:v1") is None
     assert parse_callback("draft:5:approve") is None
     assert parse_callback("rt:1:2:hack") is None
+
+
+def test_three_variants_render_with_three_buttons():
+    variants = ["первый", "второй", "третий"]
+    text = build_card_text([], variants)
+    assert all(value in text for value in variants)
+
+    kb = build_keyboard(chat_id=123, gen_id=7, variant_count=3)
+    data = [b.callback_data for row in kb.inline_keyboard for b in row]
+    assert data[:3] == ["rt:123:7:v1", "rt:123:7:v2", "rt:123:7:v3"]

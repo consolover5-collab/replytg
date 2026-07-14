@@ -79,3 +79,28 @@ async def test_identical_variants_retry_then_ok():
         (200, llm_response('{"variants": ["одно", "другое"]}')),
     ])
     assert await generate_variants(client, "m", "", "", "x") == ["одно", "другое"]
+
+
+async def test_configured_variant_count():
+    client, sent = make_client([(
+        200,
+        llm_response('{"variants": ["а", "б", "в"]}'),
+    )])
+    result = await generate_variants(client, "m", "", "", "x", count=3)
+    assert result == ["а", "б", "в"]
+    assert "РОВНО 3" in sent[0]["messages"][0]["content"]
+
+
+async def test_wrong_configured_count_retries_then_raises():
+    body = llm_response('{"variants": ["а", "б"]}')
+    client, sent = make_client([(200, body), (200, body)])
+    with pytest.raises(SuggestError):
+        await generate_variants(client, "m", "", "", "x", count=3)
+    assert len(sent) == 2
+
+
+async def test_any_duplicate_is_rejected():
+    bad = llm_response('{"variants": ["а", "б", "а"]}')
+    good = llm_response('{"variants": ["а", "б", "в"]}')
+    client, _ = make_client([(200, bad), (200, good)])
+    assert await generate_variants(client, "m", "", "", "x", count=3) == ["а", "б", "в"]

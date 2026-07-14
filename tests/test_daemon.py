@@ -36,6 +36,7 @@ class FakeSettings:
     llm_timeout_sec = 1.0
     history_limit = 30
     max_variant_len = 1000
+    variant_count = 2
     draft_wait_timeout_sec = 1
     chat_blocklist = []
 

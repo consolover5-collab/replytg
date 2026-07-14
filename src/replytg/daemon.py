@@ -133,7 +133,7 @@ class Deps:
             text = cards.build_card_text(wave, variants)
             sent = await self.bot.send_message(
                 chat_id=self.settings.owner_id, text=text,
-                reply_markup=cards.build_keyboard(a.chat_id, a.gen_id))
+                reply_markup=cards.build_keyboard(a.chat_id, a.gen_id, self.settings.variant_count))
             ok = self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
                                             variants, allow_repeat=True, now=self.now())
             if not ok:  # волна перезапущена/закрыта, пока LLM думал
@@ -145,14 +145,14 @@ class Deps:
     async def _do_repeat(self, a: RepeatCard) -> None:
         st = self.engine.current(a.chat_id)
         variants = self.engine.variants(a.chat_id)
-        if st is None or st["state"] != "awaiting" or len(variants) != 2:
+        if st is None or st["state"] != "awaiting" or len(variants) != self.settings.variant_count:
             return
         old_card = st["card_message_id"]
         wave = bridge_reader.wave_incoming(self.bridge_ro, a.chat_id, st["wave_started_ts"])
         sent = await self.bot.send_message(
             chat_id=self.settings.owner_id,
             text="🔁 Напоминаю (без ответа 2 часа):\n\n" + cards.build_card_text(wave, variants),
-            reply_markup=cards.build_keyboard(a.chat_id, a.gen_id))
+            reply_markup=cards.build_keyboard(a.chat_id, a.gen_id, self.settings.variant_count))
         self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
                                    variants, allow_repeat=False, now=self.now())
         if old_card is not None:  # старая клавиатура больше не нужна
@@ -180,7 +180,8 @@ class Deps:
                 client, self.settings.llm_model, self.style_profile,
                 history_text="\n".join(fmt(m) for m in hist),
                 wave_text="\n".join(fmt_in(m) for m in wave_rows),
-                max_len=self.settings.max_variant_len)
+                max_len=self.settings.max_variant_len,
+                count=self.settings.variant_count)
 
     # --- используется handlers.py ---
 
@@ -206,7 +207,8 @@ class Deps:
                 return  # карточка сменилась/закрылась, пока LLM думал — выбрасываем
             try:
                 await card.edit_text(text=cards.build_card_text(wave, variants),
-                                     reply_markup=cards.build_keyboard(chat_id, gen_id))
+                                     reply_markup=cards.build_keyboard(
+                                         chat_id, gen_id, self.settings.variant_count))
             except Exception as exc:  # noqa: BLE001
                 log.warning("не удалось обновить карточку: %s", exc)
         finally:
