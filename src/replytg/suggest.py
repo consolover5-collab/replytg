@@ -95,7 +95,9 @@ async def generate_variants(
         variants = _parse_variants(content, max_len)
         if variants is not None:
             return variants
-        last_problem = f"невалидные варианты: {content[:200]!r}"
+        # содержимое ответа не логируем и не показываем: в нём могут быть
+        # отражённые фрагменты личной переписки
+        last_problem = "модель вернула невалидные варианты (формат/длина/дубликат)"
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": (
             'Ответь строго JSON {"variants": ["…", "…"]}: ровно 2 РАЗНЫЕ непустые строки, '

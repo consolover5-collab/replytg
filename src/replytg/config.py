@@ -2,6 +2,7 @@ import logging
 import os
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 log = logging.getLogger(__name__)
@@ -26,7 +27,9 @@ class Settings(BaseSettings):
     poll_interval_sec: float = 5.0    # период сканирования bridge.db
     draft_wait_timeout_sec: int = 30  # ожидание, пока бридж отправит драфт
     history_limit: int = 30           # сообщений контекста для LLM
-    max_variant_len: int = 1000       # лимит длины варианта (в карточке всегда целиком)
+    # лимит длины варианта; верхняя граница согласована с CARD_LIMIT=3500 карточки
+    # (два варианта целиком + место под блок входящих)
+    max_variant_len: int = Field(default=1000, ge=100, le=1500)
     chat_blocklist: list[int] = []
 
     @property

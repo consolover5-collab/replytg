@@ -8,6 +8,7 @@ EnvironmentFile=%h/projects/replytg/.env
 ExecStart=%h/.local/bin/uv run replytg
 Restart=on-failure
 RestartSec=5
+UMask=0077
 
 [Install]
 WantedBy=default.target

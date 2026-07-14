@@ -139,7 +139,12 @@ class WaveEngine:
         )
         return True
 
-    def note_generation_failed(self, chat_id: int) -> None:
+    def note_generation_failed(self, chat_id: int, gen_id: int) -> None:
+        """Провал генерации. Guard: только если чат всё ещё в generating ЭТОЙ генерации —
+        упавший старый запрос не должен убивать волну, перезапущенную новым входящим."""
+        st = self.current(chat_id)
+        if st is None or st["state"] != "generating" or st["gen_id"] != gen_id:
+            return
         db.set_chat_state(self.conn, chat_id, state="idle", wave_started_ts=None)
 
     def note_used(self, chat_id: int, gen_id: int, now: int) -> bool:
@@ -162,12 +167,13 @@ class WaveEngine:
                           card_message_id=None, variants_json=None)
         return True
 
-    def note_variants(self, chat_id: int, variants: list[str]) -> int | None:
+    def note_variants(self, chat_id: int, variants: list[str],
+                      expected_gen_id: int) -> int | None:
         """🔄: новые варианты в существующей карточке, gen_id++ (старые кнопки протухают).
-        Guard только по состоянию: gen_id сверять не нужно — вызывающий уже проверил
-        при клике, а за время await LLM важна лишь актуальность карточки."""
+        CAS: за время await LLM могла появиться новая волна и новая карточка —
+        запоздавший результат не должен перезаписать её (guard по state и gen_id)."""
         st = self.current(chat_id)
-        if st is None or st["state"] != "awaiting":
+        if st is None or st["state"] != "awaiting" or st["gen_id"] != expected_gen_id:
             return None
         gen_id = st["gen_id"] + 1
         db.set_chat_state(self.conn, chat_id, gen_id=gen_id,

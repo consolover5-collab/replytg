@@ -52,13 +52,16 @@ replytg never sees the business bot's token.
 ## Setup
 
 ```bash
-git clone https://github.com/consolover5-collab/replytg && cd replytg
+git clone https://github.com/consolover5-collab/replytg ~/projects/replytg
+cd ~/projects/replytg       # the path matters: the systemd unit expects it
 uv sync
-cp .env.example .env        # fill in: bot token, your user id, paths, LLM
+install -m 600 .env.example .env   # fill in: bot token, your user id, paths, LLM
 cp deploy/replytg.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now replytg
 ```
+
+Cloning elsewhere? Adjust `WorkingDirectory`/`EnvironmentFile` in the unit.
 
 Create the control bot via [@BotFather](https://t.me/BotFather) (a regular bot — NOT the
 one connected to Telegram Business). Send it `/start` after launch.
@@ -83,13 +86,19 @@ The daemon works without a profile, but suggestions will be generic.
 
 ## Privacy
 
-- Your conversations never leave the machine except for requests to the LLM API you
-  chose (chat history + new incoming messages go into the prompt — pick your provider
-  consciously).
+- Your conversations leave the machine via two paths: requests to the LLM API you
+  chose (chat history + new incoming messages in the prompt — pick your provider
+  consciously) and the cards in your control bot (message fragments and reply options
+  pass through Telegram's servers like any bot message).
+- Invalid LLM responses are logged by error type only, never by content.
 - `data/` (style profile, state) is chmod 0700 with built-in protection against
   ending up in git.
 - Message content is treated as untrusted: instructions inside conversations are
   ignored by the LLM, and nothing can be sent without your button press — by design.
+- Delivery is best-effort: if the process dies in the narrow window between your
+  button press and the draft insert, the confirmed reply may not go out (the card
+  stays without "✅" — that's your signal to check the chat). No persistent send
+  queue in v0.1.
 
 ## Configuration
 

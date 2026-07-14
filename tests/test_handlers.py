@@ -22,9 +22,17 @@ def test_resolve_valid_variants(tmp_path):
 
 def test_resolve_stale_gen_id(tmp_path):
     e = make_engine(tmp_path)
-    e.note_variants(1, ["н1", "н2"])          # gen_id стал 2
+    e.note_variants(1, ["н1", "н2"], expected_gen_id=1)   # gen_id стал 2
     assert resolve_action(e, "rt:1:1:v1") is None
     assert resolve_action(e, "rt:1:2:v1") == ("v1", 1, 2, "н1")
+
+
+def test_resolve_bound_to_current_card(tmp_path):
+    """Клик по чужой/старой карточке (например, оригинал после повтора) отбивается."""
+    e = make_engine(tmp_path)
+    assert resolve_action(e, "rt:1:1:v1", message_id=5) == ("v1", 1, 1, "а")
+    assert resolve_action(e, "rt:1:1:v1", message_id=999) is None
+    assert resolve_action(e, "rt:1:1:own", message_id=999) is None
 
 
 def test_resolve_no_state_or_garbage(tmp_path):

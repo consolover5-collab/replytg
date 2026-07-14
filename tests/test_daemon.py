@@ -97,6 +97,31 @@ async def test_generation_failure_resets_chat(tmp_path):
     assert deps.engine.current(7)["state"] == "idle"
 
 
+async def test_send_failure_does_not_stick_generating(tmp_path):
+    """Ошибка Telegram при отправке карточки не оставляет чат в generating навечно."""
+    deps, bridge = make_deps(tmp_path)
+
+    class BoomBot(FakeBot):
+        async def send_message(self, *a, **kw):
+            raise RuntimeError("telegram down")
+
+    deps.bot = BoomBot()
+    add_msg(bridge, chat_id=7, ts=9000)
+    deps.engine.note_incoming(7, ts=9000, now=9000)
+    await deps.process_actions(deps.engine.tick(now=9600))
+    await deps.drain()
+    assert deps.engine.current(7)["state"] == "idle"
+
+
+async def test_scan_skips_auto_outgoing(tmp_path):
+    """Авто-ответ бриджа (away/offline, is_auto=1) не считается ручным ответом."""
+    deps, bridge = make_deps(tmp_path)
+    add_msg(bridge, chat_id=7, ts=9000, direction="in")
+    add_msg(bridge, chat_id=7, ts=9001, direction="out", is_auto=1)
+    deps.scan_bridge(now=9010)
+    assert deps.engine.current(7)["state"] == "collecting"   # волна жива
+
+
 async def test_scan_routes_directions(tmp_path):
     deps, bridge = make_deps(tmp_path)
     add_msg(bridge, chat_id=7, ts=9000, direction="in")

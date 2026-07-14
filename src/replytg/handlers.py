@@ -19,15 +19,20 @@ class OwnReply(StatesGroup):
     waiting_text = State()
 
 
-def resolve_action(engine: WaveEngine, data: str) -> tuple[str, int, int, str | None] | None:
+def resolve_action(engine: WaveEngine, data: str,
+                   message_id: int | None = None) -> tuple[str, int, int, str | None] | None:
     """callback data → (action, chat_id, gen_id, текст варианта|None).
-    None = мусор/протухшая генерация/вариантов больше нет."""
+    None = мусор/протухшая генерация/чужая карточка. Действителен только клик
+    по ТЕКУЩЕЙ карточке awaiting-чата: старая карточка (например, оригинал после
+    повтора, с которого не снялась клавиатура) отбивается по card_message_id."""
     parsed = parse_callback(data)
     if parsed is None:
         return None
     chat_id, gen_id, action = parsed
     st = engine.current(chat_id)
-    if st is None or st["gen_id"] != gen_id:
+    if st is None or st["state"] != "awaiting" or st["gen_id"] != gen_id:
+        return None
+    if message_id is not None and st["card_message_id"] != message_id:
         return None
     if action in ("v1", "v2"):
         variants = engine.variants(chat_id)
@@ -66,7 +71,8 @@ def make_router(deps) -> Router:
 
     @router.callback_query(F.data.startswith("rt:"))
     async def on_card_button(cb: CallbackQuery, state: FSMContext, bot: Bot) -> None:
-        res = resolve_action(deps.engine, cb.data or "")
+        res = resolve_action(deps.engine, cb.data or "",
+                             message_id=cb.message.message_id if cb.message else None)
         if res is None:
             await cb.answer("Карточка устарела")
             return

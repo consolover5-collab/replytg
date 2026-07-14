@@ -128,9 +128,29 @@ def test_card_sent_guard_after_manual_reply(tmp_path):
 def test_regenerate_bumps_gen_id(tmp_path):
     e = engine(tmp_path)
     to_awaiting(e)
-    new_gen = e.note_variants(1, ["н1", "н2"])
+    new_gen = e.note_variants(1, ["н1", "н2"], expected_gen_id=1)
     assert new_gen == 2
     assert e.current(1)["gen_id"] == 2
+
+
+def test_regenerate_stale_gen_rejected(tmp_path):
+    """Запоздавший результат 🔄 не перезаписывает новую пару (CAS по gen_id)."""
+    e = engine(tmp_path)
+    to_awaiting(e)
+    e.note_variants(1, ["с1", "с2"], expected_gen_id=1)   # первый 🔄: gen 2
+    assert e.note_variants(1, ["поздний1", "поздний2"], expected_gen_id=1) is None
+    assert e.variants(1) == ["с1", "с2"]
+
+
+def test_generation_failed_guarded_by_gen(tmp_path):
+    """Упавшая старая генерация не убивает волну, перезапущенную новым входящим."""
+    e = engine(tmp_path)
+    e.note_incoming(1, ts=1000, now=1000)
+    assert e.tick(now=1600) == [Generate(1, wave_started_ts=1000, gen_id=1)]
+    e.note_incoming(1, ts=1650, now=1650)                 # рестарт волны в generating
+    e.note_generation_failed(1, gen_id=1)                 # старый запрос упал
+    assert e.current(1)["state"] == "collecting"          # новая волна жива
+    assert e.tick(now=1650 + 600) == [Generate(1, wave_started_ts=1650, gen_id=2)]
 
 
 def test_stale_used_after_new_wave_rejected(tmp_path):
@@ -163,5 +183,5 @@ def test_regenerate_outside_awaiting_returns_none(tmp_path):
     e = engine(tmp_path)
     sent = to_awaiting(e)
     e.note_outgoing(1, now=sent + 50)                     # карточка закрыта ответом
-    assert e.note_variants(1, ["н1", "н2"]) is None
+    assert e.note_variants(1, ["н1", "н2"], expected_gen_id=1) is None
     assert e.current(1)["gen_id"] == 1                    # не бампнулся

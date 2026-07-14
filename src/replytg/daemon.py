@@ -67,7 +67,6 @@ class Deps:
     now: Callable[[], int] = field(default=lambda: int(time.time()))
     generate_fn: Callable | None = None  # тестовый шов; по умолчанию _generate
     _tasks: set = field(default_factory=set)
-    _inflight_gen: set = field(default_factory=set)   # chat_id с живым LLM-вызовом
     _inflight_regen: set = field(default_factory=set)
 
     # --- скан bridge.db ---
@@ -81,7 +80,9 @@ class Deps:
                 continue
             if r["direction"] == "in":
                 actions += self.engine.note_incoming(r["chat_id"], ts=r["ts"], now=now)
-            else:
+            elif not r["is_auto"]:
+                # авто-ответы бриджа (away/offline) — не ручной ответ владельца,
+                # волну не отменяют
                 actions += self.engine.note_outgoing(r["chat_id"], now=now)
         if rows:
             db.set_cursor(self.engine.conn, rows[-1]["id"])
@@ -94,12 +95,9 @@ class Deps:
         for a in actions:
             try:
                 if isinstance(a, Generate):
-                    if a.chat_id in self._inflight_gen:
-                        continue  # защита от дублей (не должен возникать: state=generating)
-                    self._inflight_gen.add(a.chat_id)
-                    task = self._spawn(self._do_generate(a))
-                    task.add_done_callback(
-                        lambda _t, c=a.chat_id: self._inflight_gen.discard(c))
+                    # параллельная старая генерация того же чата безвредна: её
+                    # note_card_sent/note_generation_failed отобьются guard'ом по gen_id
+                    self._spawn(self._do_generate(a))
                 elif isinstance(a, RepeatCard):
                     await self._do_repeat(a)
                 elif isinstance(a, CloseCard):
@@ -120,23 +118,29 @@ class Deps:
             await asyncio.gather(*list(self._tasks), return_exceptions=True)
 
     async def _do_generate(self, a: Generate) -> None:
-        # снапшот волны читается ОДИН раз: LLM и карточка видят одно и то же
-        wave = bridge_reader.wave_incoming(self.bridge_ro, a.chat_id, a.wave_started_ts)
-        gen = self.generate_fn or self._generate
+        # любой сбой (LLM, Telegram) не должен оставить чат в generating навечно:
+        # guarded note_generation_failed вернёт в idle только ЭТУ генерацию
         try:
-            variants = await gen(a.chat_id, a.wave_started_ts, wave)
-        except suggest.SuggestError as e:
-            log.warning("генерация для чата %s не удалась: %s", a.chat_id, e)
-            self.engine.note_generation_failed(a.chat_id)
-            return
-        text = cards.build_card_text(wave, variants)
-        sent = await self.bot.send_message(
-            chat_id=self.settings.owner_id, text=text,
-            reply_markup=cards.build_keyboard(a.chat_id, a.gen_id))
-        ok = self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
-                                        variants, allow_repeat=True, now=self.now())
-        if not ok:  # волна перезапущена/закрыта, пока LLM думал
-            await self._edit_card(sent.message_id, CLOSE_NOTES["answered"])
+            # снапшот волны читается ОДИН раз: LLM и карточка видят одно и то же
+            wave = bridge_reader.wave_incoming(self.bridge_ro, a.chat_id, a.wave_started_ts)
+            gen = self.generate_fn or self._generate
+            try:
+                variants = await gen(a.chat_id, a.wave_started_ts, wave)
+            except suggest.SuggestError as e:
+                log.warning("генерация для чата %s не удалась: %s", a.chat_id, e)
+                self.engine.note_generation_failed(a.chat_id, a.gen_id)
+                return
+            text = cards.build_card_text(wave, variants)
+            sent = await self.bot.send_message(
+                chat_id=self.settings.owner_id, text=text,
+                reply_markup=cards.build_keyboard(a.chat_id, a.gen_id))
+            ok = self.engine.note_card_sent(a.chat_id, a.gen_id, sent.message_id,
+                                            variants, allow_repeat=True, now=self.now())
+            if not ok:  # волна перезапущена/закрыта, пока LLM думал
+                await self._edit_card(sent.message_id, CLOSE_NOTES["answered"])
+        except Exception:  # noqa: BLE001
+            log.exception("генерация для чата %s упала", a.chat_id)
+            self.engine.note_generation_failed(a.chat_id, a.gen_id)
 
     async def _do_repeat(self, a: RepeatCard) -> None:
         st = self.engine.current(a.chat_id)
@@ -186,6 +190,7 @@ class Deps:
         st = self.engine.current(chat_id)
         if st is None or st["state"] != "awaiting":
             return
+        expected_gen = st["gen_id"]
         self._inflight_regen.add(chat_id)
         try:
             gen = self.generate_fn or self._generate
@@ -195,9 +200,10 @@ class Deps:
             except suggest.SuggestError as e:
                 await self.bot.send_message(self.settings.owner_id, f"⚠️ LLM не ответил: {e}")
                 return
-            gen_id = self.engine.note_variants(chat_id, variants)
+            gen_id = self.engine.note_variants(chat_id, variants,
+                                               expected_gen_id=expected_gen)
             if gen_id is None:
-                return  # карточка закрылась, пока LLM думал — молча выбрасываем
+                return  # карточка сменилась/закрылась, пока LLM думал — выбрасываем
             try:
                 await card.edit_text(text=cards.build_card_text(wave, variants),
                                      reply_markup=cards.build_keyboard(chat_id, gen_id))
@@ -216,7 +222,13 @@ class Deps:
             return
         status, error = await drafts_writer.wait_draft_result(
             self.bridge_rw, draft_id, timeout_sec=self.settings.draft_wait_timeout_sec)
-        note = "✅ Отправлено" if status == "sent" else f"⚠️ Не отправлено: {error}"
+        if status == "sent":
+            note = "✅ Отправлено"
+        elif status == "failed":
+            note = f"⚠️ Не отправлено: {error}"
+        else:  # timeout: драфт остался approved и может уйти позже — это НЕ отказ
+            note = ("⏳ Бридж не подтвердил отправку — статус неизвестен. "
+                    "Не отправляй повторно вслепую, сначала проверь чат.")
         await self._reply_status(card_message_id, note)
 
     async def _reply_status(self, card_message_id: int, note: str) -> None:
