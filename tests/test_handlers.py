@@ -21,7 +21,8 @@ def test_resolve_valid_variants(tmp_path):
 
 def test_resolve_stale_gen_id(tmp_path):
     e = make_engine(tmp_path)
-    e.note_variants(1, ["н1", "н2"], expected_gen_id=1)   # gen_id стал 2
+    e.note_variants(1, ["н1", "н2"], expected_gen_id=1,
+                    expected_card_message_id=5, now=700)   # gen_id стал 2
     assert resolve_action(e, "rt:1:1:v1") is None
     assert resolve_action(e, "rt:1:2:v1") == ("v1", 1, 2, "н1")
 
@@ -57,6 +58,7 @@ def test_resolve_non_variant_actions(tmp_path):
 
 def test_resolve_third_variant(tmp_path):
     e = make_engine(tmp_path)
-    e.note_variants(1, ["а", "б", "в"], expected_gen_id=1)
+    e.note_variants(1, ["а", "б", "в"], expected_gen_id=1,
+                    expected_card_message_id=5, now=700)
     assert resolve_action(e, "rt:1:2:v3", message_id=5) == ("v3", 1, 2, "в")
     assert resolve_action(e, "rt:1:2:v4", message_id=5) is None

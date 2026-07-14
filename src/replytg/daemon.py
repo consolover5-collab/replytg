@@ -146,26 +146,67 @@ class Deps:
     async def _do_repeat(self, a: RepeatCard) -> None:
         st = self.engine.current(a.chat_id)
         variants = self.engine.variants(a.chat_id)
-        if st is None or st["state"] != "awaiting" or len(variants) != self.settings.variant_count:
+        # ранний guard по gen_id: тик мог родить RepeatCard для генерации, которую
+        # уже сменил 🔄/новая волна — фантомный повтор устаревшей пары не шлём
+        if (
+            st is None
+            or st["state"] != "awaiting"
+            or st["gen_id"] != a.gen_id
+            or len(variants) != self.settings.variant_count
+        ):
             return
+
         old_card = st["card_message_id"]
-        wave = bridge_reader.wave_incoming(self.bridge_ro, a.chat_id, st["wave_started_ts"])
-        sent = await self.bot.send_message(
-            chat_id=self.settings.owner_id,
-            text="🔁 Напоминаю (без ответа 2 часа):\n\n" + cards.build_card_text(wave, variants),
-            reply_markup=cards.build_keyboard(a.chat_id, a.gen_id, self.settings.variant_count))
-        self.engine.note_repeat_sent(
+        # regen уступает дорогу: если крутится 🔄, повтор не мешает — таймер восстановит
+        # сама регенерация (успех → новый цикл, провал → resume_repeat)
+        if old_card is None or a.chat_id in self._inflight_regen:
+            return
+
+        wave = bridge_reader.wave_incoming(
+            self.bridge_ro, a.chat_id, st["wave_started_ts"],
+        )
+        try:
+            sent = await self.bot.send_message(
+                chat_id=self.settings.owner_id,
+                text="🔁 Напоминаю:\n\n" + cards.build_card_text(wave, variants),
+                reply_markup=cards.build_keyboard(
+                    a.chat_id, a.gen_id, self.settings.variant_count,
+                ),
+            )
+        except Exception:
+            # отправка не удалась — перевооружаем таймер, чтобы карточка не осталась
+            # без повтора навсегда
+            self.engine.resume_repeat(a.chat_id, a.gen_id, old_card, self.now())
+            raise
+
+        # повторная проверка после await: 🔄 мог стартовать, пока летел send_message —
+        # тогда новая карточка лишняя, гасим именно ЕЁ клавиатуру
+        if a.chat_id in self._inflight_regen:
+            await self._remove_keyboard(sent.message_id)
+            return
+
+        accepted = self.engine.note_repeat_sent(
             a.chat_id, a.gen_id,
             expected_card_message_id=old_card,
             new_card_message_id=sent.message_id,
             now=self.now(),
         )
-        if old_card is not None:  # старая клавиатура больше не нужна
-            try:
-                await self.bot.edit_message_reply_markup(
-                    chat_id=self.settings.owner_id, message_id=old_card, reply_markup=None)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("не удалось снять клавиатуру старой карточки: %s", exc)
+        # CAS-отказ: текущая карточка уже сменилась — гасим НОВУЮ (только что отправленную),
+        # а текущую/старую не трогаем
+        if not accepted:
+            await self._remove_keyboard(sent.message_id)
+            return
+        await self._remove_keyboard(old_card)  # старая клавиатура больше не нужна
+
+    async def _remove_keyboard(self, message_id: int) -> None:
+        try:
+            await self.bot.edit_message_reply_markup(
+                chat_id=self.settings.owner_id,
+                message_id=message_id,
+                reply_markup=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("не удалось снять клавиатуру карточки %s: %s", message_id, exc)
 
     async def _generate(self, chat_id: int, wave_started_ts: int, wave_rows: list) -> list[str]:
         hist = bridge_reader.history(self.bridge_ro, chat_id, self.settings.history_limit,
@@ -196,26 +237,70 @@ class Deps:
         st = self.engine.current(chat_id)
         if st is None or st["state"] != "awaiting":
             return
+
         expected_gen = st["gen_id"]
+        expected_card = card.message_id
         self._inflight_regen.add(chat_id)
         try:
-            gen = self.generate_fn or self._generate
-            wave = bridge_reader.wave_incoming(self.bridge_ro, chat_id, st["wave_started_ts"])
-            try:
-                variants = await gen(chat_id, st["wave_started_ts"], wave)
-            except suggest.SuggestError as e:
-                await self.bot.send_message(self.settings.owner_id, f"⚠️ LLM не ответил: {e}")
+            # пауза таймера повтора: пока крутится LLM, тик не должен родить повтор
+            # старых вариантов. Любой выход ниже обязан вернуть таймер (resume/note_variants)
+            if not self.engine.pause_repeat(chat_id, expected_gen, expected_card):
                 return
-            gen_id = self.engine.note_variants(chat_id, variants,
-                                               expected_gen_id=expected_gen)
-            if gen_id is None:
-                return  # карточка сменилась/закрылась, пока LLM думал — выбрасываем
             try:
-                await card.edit_text(text=cards.build_card_text(wave, variants),
-                                     reply_markup=cards.build_keyboard(
-                                         chat_id, gen_id, self.settings.variant_count))
-            except Exception as exc:  # noqa: BLE001
-                log.warning("не удалось обновить карточку: %s", exc)
+                wave = bridge_reader.wave_incoming(
+                    self.bridge_ro, chat_id, st["wave_started_ts"],
+                )
+                gen = self.generate_fn or self._generate
+                try:
+                    variants = await gen(chat_id, st["wave_started_ts"], wave)
+                except suggest.SuggestError as exc:
+                    self.engine.resume_repeat(chat_id, expected_gen, expected_card, self.now())
+                    await self.bot.send_message(
+                        self.settings.owner_id, f"⚠️ LLM не ответил: {exc}",
+                    )
+                    return
+
+                current = self.engine.current(chat_id)
+                if (
+                    current is None
+                    or current["state"] != "awaiting"
+                    or current["gen_id"] != expected_gen
+                    or current["card_message_id"] != expected_card
+                ):
+                    # resume не нужен: карточка уже не наша, repeat-таймером владеет новое состояние
+                    return  # карточка сменилась/закрылась, пока LLM думал — выбрасываем
+
+                new_gen = expected_gen + 1
+                # edit ДО записи: если Telegram откажет, сохранённое состояние остаётся
+                # согласованным с видимой карточкой (старые варианты/gen_id/таймер)
+                try:
+                    await card.edit_text(
+                        text=cards.build_card_text(wave, variants),
+                        reply_markup=cards.build_keyboard(
+                            chat_id, new_gen, self.settings.variant_count,
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("не удалось обновить карточку: %s", exc)
+                    self.engine.resume_repeat(chat_id, expected_gen, expected_card, self.now())
+                    return
+
+                # edit прошёл — запись синхронна, без await между ней и edit_text,
+                # так что другая корутина не влезет в это окно
+                stored_gen = self.engine.note_variants(
+                    chat_id, variants,
+                    expected_gen_id=expected_gen,
+                    expected_card_message_id=expected_card,
+                    now=self.now(),
+                )
+                if stored_gen is None:
+                    # resume не нужен: карточка сменилась под edit'ом, repeat-таймером владеет новое состояние
+                    await self._edit_card(expected_card, "Карточка устарела")
+            except Exception:
+                # непредвиденный сбой (SuggestError/edit обработаны выше) не должен
+                # оставить карточку без таймера повтора: пауза требует парного resume
+                self.engine.resume_repeat(chat_id, expected_gen, expected_card, self.now())
+                raise
         finally:
             self._inflight_regen.discard(chat_id)
 

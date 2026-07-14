@@ -132,6 +132,42 @@ class WaveEngine:
             return None
         return now + self.cfg.repeat_after_sec
 
+    def _current_card(self, chat_id: int, gen_id: int,
+                      card_message_id: int) -> sqlite3.Row | None:
+        """Строка чата, только если это ВСЁ ЕЩЁ та же awaiting-карточка (та же
+        генерация И тот же message_id). Иначе None — пока вызывающий держал карточку
+        в руках, её успели сменить (новый повтор, 🔄, новая волна)."""
+        st = self.current(chat_id)
+        if (
+            st is None
+            or st["state"] != "awaiting"
+            or st["gen_id"] != gen_id
+            or st["card_message_id"] != card_message_id
+        ):
+            return None
+        return st
+
+    def pause_repeat(self, chat_id: int, gen_id: int, card_message_id: int) -> bool:
+        """Снять таймер повтора на время регенерации: тик не должен родить RepeatCard,
+        пока крутится 🔄. Обязателен парный resume_repeat/note_variants на выходе."""
+        if self._current_card(chat_id, gen_id, card_message_id) is None:
+            return False
+        db.set_chat_state(self.conn, chat_id, repeat_at_ts=None)
+        return True
+
+    def resume_repeat(self, chat_id: int, gen_id: int,
+                      card_message_id: int, now: int) -> bool:
+        """Вернуть таймер повтора (регенерация не удалась). CAS по карточке: если она
+        уже сменилась — no-op, чужой цикл не трогаем."""
+        st = self._current_card(chat_id, gen_id, card_message_id)
+        if st is None:
+            return False
+        db.set_chat_state(
+            self.conn, chat_id,
+            repeat_at_ts=self._next_repeat(now, st["repeat_count"]),
+        )
+        return True
+
     def note_card_sent(self, chat_id: int, gen_id: int, card_message_id: int,
                        variants: list[str], now: int) -> bool:
         """Фиксирует отправленную карточку исходной генерации. False, если генерация
@@ -201,16 +237,24 @@ class WaveEngine:
         return True
 
     def note_variants(self, chat_id: int, variants: list[str],
-                      expected_gen_id: int) -> int | None:
-        """🔄: новые варианты в существующей карточке, gen_id++ (старые кнопки протухают).
-        CAS: за время await LLM могла появиться новая волна и новая карточка —
-        запоздавший результат не должен перезаписать её (guard по state и gen_id)."""
-        st = self.current(chat_id)
-        if st is None or st["state"] != "awaiting" or st["gen_id"] != expected_gen_id:
+                      expected_gen_id: int, expected_card_message_id: int,
+                      now: int) -> int | None:
+        """🔄: новые варианты в существующей карточке, gen_id++ (старые кнопки протухают)
+        и цикл повтора начинается заново. CAS по gen_id И card_message_id: за время await
+        LLM могла появиться новая волна/карточка или прилететь повтор — запоздавший
+        результат не должен перезаписать чужую карточку."""
+        if self._current_card(
+            chat_id, expected_gen_id, expected_card_message_id,
+        ) is None:
             return None
-        gen_id = st["gen_id"] + 1
-        db.set_chat_state(self.conn, chat_id, gen_id=gen_id,
-                          variants_json=json.dumps(variants, ensure_ascii=False))
+        gen_id = expected_gen_id + 1
+        db.set_chat_state(
+            self.conn, chat_id,
+            gen_id=gen_id,
+            variants_json=json.dumps(variants, ensure_ascii=False),
+            repeat_count=0,
+            repeat_at_ts=self._next_repeat(now, 0),
+        )
         return gen_id
 
     def variants(self, chat_id: int) -> list[str]:
